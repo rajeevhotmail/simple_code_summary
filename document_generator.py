@@ -19,8 +19,12 @@ class DocumentationGenerator:
             f.write("## Overview\n")
             f.write(f"Total files analyzed: {len(analysis_results)}\n\n")
 
+
             # Function Relationships Section
             f.write("## Function Relationships\n\n")
+            self.generate_function_relationships(f, analysis_results)
+            # Add our new mermaid diagram
+            self.generate_mermaid_diagram(f, call_stacks)
             for file_result in analysis_results:
                 for function in file_result['functions']:
                     f.write(f"### `{function['name']}`\n")
@@ -54,3 +58,44 @@ class DocumentationGenerator:
                 f.write(f"# File: {file_result['file']}\n")
                 f.write(f"{file_result.get('description', 'No description available')}\n")
                 f.write("```\n\n")
+
+            f.write("## Function Call Stacks\n\n")
+            for entry_point, stack in call_stacks.items():
+                f.write(f"### Entry Point: `{entry_point}`\n\n")
+                f.write("```mermaid\nflowchart TD\n")
+                for func in stack:
+                    indent = "  " * func['depth']
+                    func_id = f"{func['name']}[{func['name']}]"
+                    for called in func['calls']:
+                        f.write(f"{indent}{func_id} --> {called}[{called}]\n")
+                f.write("```\n\n")
+
+    def generate_function_relationships(self, f, analysis_results):
+        for file_result in analysis_results:
+            f.write(f"### File: `{os.path.basename(file_result['file'])}`\n\n")
+            for function in file_result['functions']:
+                # Function name and signature
+                f.write(f"#### Function: `{function['name']}`\n")
+                if 'signature' in function:
+                    params = ', '.join(function['signature'].get('parameters', []))
+                    f.write(f"**Signature:** `def {function['name']}({params})`\n\n")
+
+                # Operations
+                f.write(f"**Operations:**\n```python\n{function['operations']}\n```\n\n")
+
+                # Dependencies
+                f.write("**Dependencies:**\n")
+                f.write("- Calls: " + (', '.join(f'`{c}`' for c in function['relationships']['calls']) or 'None') + "\n")
+                f.write("- Called by: " + (', '.join(f'`{c}`' for c in function['relationships']['called_by']) or 'None') + "\n\n")
+                f.write("---\n\n")
+
+    def generate_mermaid_diagram(self, f, call_stacks):
+        f.write("\n## Call Stack Visualization\n\n")
+        f.write("```mermaid\nflowchart TD\n")
+
+        for entry_point, stack in call_stacks.items():
+            for func in stack:
+                for called in func['calls']:
+                    f.write(f"    {func['name']}[{func['name']}] --> {called}[{called}]\n")
+
+        f.write("```\n\n")

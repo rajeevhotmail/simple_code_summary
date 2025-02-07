@@ -6,8 +6,19 @@ import glob
 from code_reader import CodeReader
 
 class CodeAnalyzer:
-    def __init__(self):  # Remove directory_path parameter
+    def __init__(self):
         self.parser, self.language = self.setup_parser()
+        self.function_query = """
+            (function_definition
+            name: (identifier)) @function
+        """
+
+    def setup_parser(self):
+        LANGUAGE_PATH = os.path.expanduser('~/.tree-sitter/tree-sitter-python.so')
+        language = Language(LANGUAGE_PATH, 'python')
+        parser = Parser()
+        parser.set_language(language)
+        return parser, language
 
     def setup_parser(self):
         LANGUAGE_PATH = os.path.expanduser('~/.tree-sitter/tree-sitter-python.so')
@@ -33,63 +44,64 @@ class CodeAnalyzer:
 
         return default_description
 
-
-    def analyze_file(self, file_path: str):
-        with open(file_path, 'r') as f:
-            code = f.read()
-        tree = self.parser.parse(bytes(code, "utf8"))
-
-        module_name = os.path.basename(file_path)
-        default_module_desc = f"Python module for {module_name.replace('.py', '')}"
-        module_doc = self.extract_docstring(tree.root_node, default_module_desc)
-
-        function_query = self.language.query("""
-            (function_definition 
-                name: (identifier) @function.name
-                body: (block) @function.body)
+    def _find_return_statement(self, body):
+        query = self.language.query("""
+            (return_statement) @return
         """)
+        captures = query.captures(body)
+        return captures[0][0] if captures else None
+    def analyze_file(self, file_path):
+        with open(file_path, 'rb') as file:
+            content = file.read()
 
+        tree = self.parser.parse(content)
         functions = []
-        captures = function_query.captures(tree.root_node)
 
-        for node, capture_name in captures:
-            if capture_name == 'function.name':
-                function_name = node.text.decode('utf8')
-                docstring = self.extract_docstring(node.parent, "")
+        query = self.language.query(self.function_query)
+        captures = query.captures(tree.root_node)
+
+        for node, _ in captures:
+            name_node = node.child_by_field_name('name')
+            if name_node:  # Only process if we have a valid name node
+                function_name = name_node.text.decode('utf8')
+                print(f"Found function: {function_name}")  # Debug print
+                signature = self.analyze_function_signature(node)
                 operations = self.analyze_operations(node.parent)
                 operations_desc = self.generate_accurate_description(function_name, operations)
 
                 functions.append({
                     'name': function_name,
-                    'docstring': docstring,
+                    'signature': signature,
                     'operations': operations_desc,
-                    'calls': self.find_function_calls(node.parent)
+                    'calls': self.find_function_calls(node)
                 })
 
         return {
             'file': file_path,
-            'description': module_doc,
             'functions': functions
         }
 
+    def _analyze_return_type(self, return_stmt):
+        if return_stmt:
+            return_value = return_stmt.child_by_field_name('value')
+            if return_value:
+                return return_value.type
+        return 'None'
+
     def analyze_operations(self, node):
         operation_patterns = {
-            'sorting': {'pattern': '(call function: (identifier) @sort)',
-                       'description': 'Performs sequence sorting'},
-            'arithmetic': {'pattern': '(binary_operator) @math',
-                          'description': 'Handles mathematical calculations'},
-            'json': {'pattern': '(call function: (attribute object: (identifier)) @json)',
-                    'description': 'Processes API responses and JSON data'},
-            'list_ops': {'pattern': '(call function: (identifier) @list)',
-                        'description': 'Manages list operations'},
-            'string_ops': {'pattern': '(call function: (identifier) @str)',
-                          'description': 'Handles text processing'},
-            'error_handling': {'pattern': '(raise_statement) @error',
-                             'description': 'Implements error handling'},
-            'url_handling': {'pattern': '(call function: (attribute object: (identifier)) @url)',
-                            'description': 'Manages URL operations'},
+            'test': {'pattern': '(call function: (identifier) @test)',
+                    'description': 'Performs unit testing'},
+            'assert': {'pattern': '(assert_statement) @assert',
+                      'description': 'Validates expected behavior'},
+            'api_call': {'pattern': '(call function: (attribute object: (identifier)) @api)',
+                        'description': 'Makes API requests'},
             'validation': {'pattern': '(call function: (identifier) @validate)',
-                          'description': 'Validates input parameters'}
+                          'description': 'Validates input data'},
+            'string_op': {'pattern': '(string) @str',
+                         'description': 'Handles string operations'},
+            'comparison': {'pattern': '(comparison_operator) @compare',
+                          'description': 'Performs comparisons'}
         }
 
         detected_ops = []
@@ -99,6 +111,7 @@ class CodeAnalyzer:
                 detected_ops.append(op_info['description'])
 
         return " and ".join(detected_ops) if detected_ops else "Basic function operations"
+
 
 
     def analyze_call_stack(self, entry_point, results):
@@ -127,6 +140,31 @@ class CodeAnalyzer:
         build_call_chain(entry_point)
         return call_stack
 
+    def analyze_function_signature(self, node):
+        params = []
+        returns = None
+
+        # Get parameters with their types if available
+        parameters = node.child_by_field_name('parameters')
+        if parameters:
+            for param in parameters.children:
+                if param.type == 'identifier':
+                    param_text = param.text.decode('utf8')
+                    params.append(param_text)
+                elif param.type == 'typed_parameter':
+                    param_name = param.child_by_field_name('name').text.decode('utf8')
+                    param_type = param.child_by_field_name('type').text.decode('utf8')
+                    params.append(f"{param_name}: {param_type}")
+
+        # Get return type annotation if present
+        return_annotation = node.child_by_field_name('return_type')
+        if return_annotation:
+            returns = return_annotation.text.decode('utf8')
+
+        return {
+            'parameters': params,
+            'return_type': returns or self._analyze_return_type(node)
+        }
 
 
     def generate_accurate_description(self, function_name, operations_desc):
